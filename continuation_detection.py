@@ -101,42 +101,30 @@ def detect_continuation_question(
 
     # Use LLM to analyze if this is a continuation
     analysis_prompt = f"""
-        Analyze if Question 2 is a continuation or follow-up of Question 1.
-        
-        Question 1: {previous_question}
-        SQL 1: {previous_sql}
-        Tables used in SQL 1: {', '.join(prev_tables)}
-        
-        Question 2: {current_question}
-        SQL 2: {current_sql}
-        Tables used in SQL 2: {', '.join(curr_tables)}
-        
-        CRITICAL RULE: Only consider it a continuation if BOTH queries can be answered using the same table(s).
-        
-        Rules for continuation detection:
-        1. Both questions MUST be answerable from the same table(s) - if different tables are needed, it's NOT a continuation
-        2. Question 2 must be CLEARLY incomplete without Question 1's context
-        3. If Question 2 makes complete sense on its own, it's NOT a continuation
-        4. Very short questions (under 4 words) that reference time periods, filters, or metrics are likely continuations
-        5. Be conservative - when in doubt, mark as NOT a continuation
-        6. 🚫 IMPORTANT: Never merge intents. The combined_question must ONLY rewrite Question 2 by inheriting context (filters, vendor, year, etc.) from Question 1. Do not repeat or include Q1's intent.
-        
-        Examples of TRUE continuations (same table):
-        - Q1: "total sales for customer X" → Q2: "in 2024?" (both use sales table)
-        - Q1: "number of POs" → Q2: "which are approved?" (both use PO table)
-        
-        Examples of FALSE continuations (different tables):
-        - Q1: "show vendors" → Q2: "show employees" (vendors vs employees tables)
-        - Q1: "PO details" → Q2: "vendor address" (PO table vs vendor table)
-        
-        Respond in JSON format:
-        {{
-            "is_continuation": true/false,
-            "confidence": "high"/"medium"/"low",  
-            "reasoning": "brief explanation mentioning table usage",
-            "combined_question": "suggested combined question if continuation, else null"
-        }}
-"""
+    Analyze if Question 2 is a continuation or follow-up of Question 1.
+
+    Question 1: {previous_question}
+    SQL 1: {previous_sql}
+
+    Question 2: {current_question}
+    SQL 2: {current_sql}
+
+    Common tables used: {', '.join(common_tables)}
+
+    Rules for continuation detection:
+    1. Both questions must use the same table(s)
+    2. Question 2 should be asking for additional details or filtering of Question 1's context
+    3. Question 2 might use pronouns (it, that, which) or be incomplete without Question 1's context
+    4. Question 2 might be asking for a subset, maximum, minimum, or specific detail from Question 1's scope
+    5. 🚫 IMPORTANT: Never merge intents. The combined_question must ONLY rewrite Question 2 by inheriting context (filters, vendor, year, etc.) from Question 1. Do not repeat or include Q1's intent.
+    Respond in JSON format:
+    {{
+        "is_continuation": true/false,
+        "confidence": "high"/"medium"/"low",
+        "reasoning": "brief explanation",
+        "combined_question": "suggested combined question if continuation, else null"
+    }}
+    """
 
     messages = [
         {"role": "system", "content": "You are an expert at analyzing SQL queries and natural language questions."},
@@ -321,6 +309,4 @@ def check_and_handle_continuation(
         get_last_sql
     )
 
-
     return result
-

@@ -2171,33 +2171,28 @@ def main_app():
 
                 # Use limited context for SQL generation
                 # Check if we're in a correction flow
-                in_correction_flow = st.session_state.get("spelling_just_corrected", False)
-                limited_messages = get_limited_conversation_history(
-                    enhanced_messages[1:],
-                    window_size=2,
-                    preserve_correction_context=in_correction_flow,
-                    last_sql_query=st.session_state.get("last_sql_query"),
-                    current_prompt=prompt
-                )
-                enhanced_messages_limited = [{"role": "system", "content": enhanced_prompt}] + limited_messages
-                response_text, token_usage_first_call = get_groq_response(enhanced_messages_limited)
+                response_text, token_usage_first_call = get_groq_response(enhanced_messages)
 
                 # Clear temporary clarifications after use
                 del st.session_state.temp_clarifications
             else:
-                # Use limited context for SQL generation
-                # Check if we're in a correction flow
-                in_correction_flow = st.session_state.get("spelling_just_corrected", False)
-                limited_messages = get_limited_conversation_history(
-                    st.session_state.messages,
-                    window_size=2,
-                    preserve_correction_context=in_correction_flow,
-                    last_sql_query=st.session_state.get("last_sql_query"),
-                    current_prompt=prompt
-                )
-                response_text, token_usage_first_call = get_groq_response_with_system(limited_messages)
+                # Check if this might be a continuation query
+                if st.session_state.last_sql_query and len(prompt.split()) < 5:  # Short questions likely continuations
+                    # Add context about previous query
+                    context_note = f"\nNote: The previous query was: {st.session_state.last_sql_query}\nConsider if this new question is a continuation or refinement of that query."
 
-            st.session_state.total_tokens += token_usage_first_call
+                    # Create a temporary message with context
+                    temp_messages = st.session_state.messages.copy()
+                    if temp_messages and temp_messages[-1]["role"] == "user":
+                        temp_messages[-1] = {"role": "user", "content": temp_messages[-1]["content"] + context_note}
+
+                    response_text, token_usage_first_call = get_groq_response_with_system(temp_messages)
+                else:
+                    response_text, token_usage_first_call = get_groq_response_with_system(
+                        st.session_state.messages
+                    )
+
+                st.session_state.total_tokens += token_usage_first_call
 
             # Check if it's an error response
             if response_text.strip().startswith("ERROR:"):
@@ -2865,40 +2860,27 @@ def main_app():
                 # Create messages with enhanced system prompt
                 enhanced_messages = [{"role": "system", "content": enhanced_prompt}] + st.session_state.messages[1:]
 
-                # Use limited context for SQL generation
-                # Check if we're in a correction flow or just made a correction choice
-                in_correction_flow = (
-                        st.session_state.get("spelling_just_corrected", False) or
-                        st.session_state.get("awaiting_correction_choice", False)
-                )
-                limited_messages = get_limited_conversation_history(
-                    enhanced_messages[1:],
-                    window_size=2,
-                    preserve_correction_context=in_correction_flow,
-                    last_sql_query=st.session_state.get("last_sql_query"),
-                    current_prompt=prompt
-                )
-                enhanced_messages_limited = [{"role": "system", "content": enhanced_prompt}] + limited_messages
-                response_text, token_usage_first_call = get_groq_response(enhanced_messages_limited)
-
-                # Don't delete temp_clarifications here - keep them for potential spelling correction
+                response_text, token_usage_first_call = get_groq_response(enhanced_messages)
             else:
                 # Use limited context for SQL generation
                 # Check if we're in a correction flow or just made a correction choice
-                in_correction_flow = (
-                        st.session_state.get("spelling_just_corrected", False) or
-                        st.session_state.get("awaiting_correction_choice", False)
-                )
-                limited_messages = get_limited_conversation_history(
-                    st.session_state.messages,
-                    window_size=2,
-                    preserve_correction_context=in_correction_flow,
-                    last_sql_query=st.session_state.get("last_sql_query"),
-                    current_prompt=prompt
-                )
-                response_text, token_usage_first_call = get_groq_response_with_system(limited_messages)
+                # Check if this might be a continuation query
+                if st.session_state.last_sql_query and len(prompt.split()) < 5:  # Short questions likely continuations
+                    # Add context about previous query
+                    context_note = f"\nNote: The previous query was: {st.session_state.last_sql_query}\nConsider if this new question is a continuation or refinement of that query."
 
-            st.session_state.total_tokens += token_usage_first_call
+                    # Create a temporary message with context
+                    temp_messages = st.session_state.messages.copy()
+                    if temp_messages and temp_messages[-1]["role"] == "user":
+                        temp_messages[-1] = {"role": "user", "content": temp_messages[-1]["content"] + context_note}
+
+                    response_text, token_usage_first_call = get_groq_response_with_system(temp_messages)
+                else:
+                    response_text, token_usage_first_call = get_groq_response_with_system(
+                        st.session_state.messages
+                    )
+
+                st.session_state.total_tokens += token_usage_first_call
 
             # Check if it's an error response
             if response_text.strip().startswith("ERROR:"):

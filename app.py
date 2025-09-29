@@ -636,7 +636,8 @@ def load_conversation_into_session(conversation):
     st.session_state.last_save_time = time.time()
 
 
-def get_limited_conversation_history(messages, window_size=2, preserve_correction_context=False):
+def get_limited_conversation_history(messages, window_size=2, preserve_correction_context=False, last_sql_query=None,
+                                     current_prompt=None):
     """
     Get only the most recent conversation window for LLM context.
     window_size=2 means we keep only the last Q&A pair (1 user message + 1 assistant message)
@@ -662,8 +663,23 @@ def get_limited_conversation_history(messages, window_size=2, preserve_correctio
             # Look for the original question that led to this correction
             window_size = 4  # Include 2 Q&A pairs to maintain context
 
-    # Return only the last 'window_size' messages
-    return non_system_messages[-window_size:] if len(non_system_messages) > window_size else non_system_messages
+    # Get the limited messages
+    limited_msgs = non_system_messages[-window_size:] if len(non_system_messages) > window_size else non_system_messages
+
+    # If we have a short current prompt and last SQL, add context to the last user message
+    if (last_sql_query and current_prompt and len(current_prompt.split()) < 5 and
+            limited_msgs and limited_msgs[-1]["role"] == "user"):
+        # Add SQL context to help with continuation
+        context_note = f"\nNote: The previous SQL query was: {last_sql_query}\nConsider if this new question is a continuation or refinement of that query."
+
+        # Create a copy and modify the last message
+        limited_msgs = limited_msgs.copy()
+        limited_msgs[-1] = {
+            "role": "user",
+            "content": limited_msgs[-1]["content"] + context_note
+        }
+
+    return limited_msgs
 
 # ---------------------------------------------
 # 7. Query Logging (existing from your code)
@@ -2159,7 +2175,9 @@ def main_app():
                 limited_messages = get_limited_conversation_history(
                     enhanced_messages[1:],
                     window_size=2,
-                    preserve_correction_context=in_correction_flow
+                    preserve_correction_context=in_correction_flow,
+                    last_sql_query=st.session_state.get("last_sql_query"),
+                    current_prompt=prompt
                 )
                 enhanced_messages_limited = [{"role": "system", "content": enhanced_prompt}] + limited_messages
                 response_text, token_usage_first_call = get_groq_response(enhanced_messages_limited)
@@ -2173,7 +2191,9 @@ def main_app():
                 limited_messages = get_limited_conversation_history(
                     st.session_state.messages,
                     window_size=2,
-                    preserve_correction_context=in_correction_flow
+                    preserve_correction_context=in_correction_flow,
+                    last_sql_query=st.session_state.get("last_sql_query"),
+                    current_prompt=prompt
                 )
                 response_text, token_usage_first_call = get_groq_response_with_system(limited_messages)
 
@@ -2854,7 +2874,9 @@ def main_app():
                 limited_messages = get_limited_conversation_history(
                     enhanced_messages[1:],
                     window_size=2,
-                    preserve_correction_context=in_correction_flow
+                    preserve_correction_context=in_correction_flow,
+                    last_sql_query=st.session_state.get("last_sql_query"),
+                    current_prompt=prompt
                 )
                 enhanced_messages_limited = [{"role": "system", "content": enhanced_prompt}] + limited_messages
                 response_text, token_usage_first_call = get_groq_response(enhanced_messages_limited)
@@ -2870,7 +2892,9 @@ def main_app():
                 limited_messages = get_limited_conversation_history(
                     st.session_state.messages,
                     window_size=2,
-                    preserve_correction_context=in_correction_flow
+                    preserve_correction_context=in_correction_flow,
+                    last_sql_query=st.session_state.get("last_sql_query"),
+                    current_prompt=prompt
                 )
                 response_text, token_usage_first_call = get_groq_response_with_system(limited_messages)
 

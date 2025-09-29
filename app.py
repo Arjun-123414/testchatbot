@@ -1504,16 +1504,16 @@ def main_app():
             st.rerun()
         st.markdown("### Settings")
 
-        # Checkbox for continuation detection
-        continuation_enabled = st.checkbox(
-            "🔄 Smart Question Linking",
-            value=st.session_state.get('continuation_detection_enabled', True),
-            key="continuation_checkbox",
-            help="Automatically detect when your question relates to the previous one"
-        )
+        # # Checkbox for continuation detection
+        # continuation_enabled = st.checkbox(
+        #     "🔄 Smart Question Linking",
+        #     value=st.session_state.get('continuation_detection_enabled', True),
+        #     key="continuation_checkbox",
+        #     help="Automatically detect when your question relates to the previous one"
+        # )
 
-        # Update session state when checkbox changes
-        st.session_state.continuation_detection_enabled = continuation_enabled
+        # # Update session state when checkbox changes
+        # st.session_state.continuation_detection_enabled = continuation_enabled
 
     # ----------------------------------
     #  B) MAIN: Chat interface
@@ -3324,4 +3324,5 @@ if st.session_state["authenticated"]:
     else:
         main_app()
 else:
+
     login_page()

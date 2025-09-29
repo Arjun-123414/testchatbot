@@ -118,10 +118,8 @@ def detect_continuation_question(
         2. Question 2 must be CLEARLY incomplete without Question 1's context
         3. If Question 2 makes complete sense on its own, it's NOT a continuation
         4. Very short questions (under 4 words) that reference time periods, filters, or metrics are likely continuations
-        5. Complete questions starting with "What", "Show", "List", "Give me", "How many" are usually NOT continuations unless they use pronouns like "this", "that", "it"
-        6. Phrases like "in 2025?", "last year?", "for this vendor?" are strong continuation indicators
-        7. Be conservative - when in doubt, mark as NOT a continuation
-        8. 🚫 IMPORTANT: Never merge intents. The combined_question must ONLY rewrite Question 2 by inheriting context (filters, vendor, year, etc.) from Question 1. Do not repeat or include Q1's intent.
+        5. Be conservative - when in doubt, mark as NOT a continuation
+        6. 🚫 IMPORTANT: Never merge intents. The combined_question must ONLY rewrite Question 2 by inheriting context (filters, vendor, year, etc.) from Question 1. Do not repeat or include Q1's intent.
         
         Examples of TRUE continuations (same table):
         - Q1: "total sales for customer X" → Q2: "in 2024?" (both use sales table)
@@ -325,3 +323,4 @@ def check_and_handle_continuation(
 
 
     return result
+

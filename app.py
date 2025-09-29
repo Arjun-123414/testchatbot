@@ -19,7 +19,7 @@ import base64
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 from syn import correct_user_question_enhanced
-from cont import check_and_handle_continuation
+from continuation_detection import check_and_handle_continuation
 from sql_query_fixer import fix_generated_sql
 # ------------------------
 # Constants for Autosave
@@ -636,7 +636,34 @@ def load_conversation_into_session(conversation):
     st.session_state.last_save_time = time.time()
 
 
+def get_limited_conversation_history(messages, window_size=2, preserve_correction_context=False):
+    """
+    Get only the most recent conversation window for LLM context.
+    window_size=2 means we keep only the last Q&A pair (1 user message + 1 assistant message)
+    preserve_correction_context=True will look back further if we're in a correction flow
+    """
+    if not messages:
+        return []
 
+    # Filter out system messages as we'll add that separately
+    non_system_messages = [msg for msg in messages if msg["role"] != "system"]
+
+    # Check if we're in a correction/clarification flow
+    if preserve_correction_context and len(non_system_messages) >= 2:
+        # Check if the last assistant message is a spelling suggestion
+        last_assistant_msg = None
+        for msg in reversed(non_system_messages):
+            if msg["role"] == "assistant":
+                last_assistant_msg = msg
+                break
+
+        if last_assistant_msg and last_assistant_msg["content"] == "spelling_suggestions":
+            # We're in a spelling correction flow - include more context
+            # Look for the original question that led to this correction
+            window_size = 4  # Include 2 Q&A pairs to maintain context
+
+    # Return only the last 'window_size' messages
+    return non_system_messages[-window_size:] if len(non_system_messages) > window_size else non_system_messages
 
 # ---------------------------------------------
 # 7. Query Logging (existing from your code)
@@ -1483,17 +1510,7 @@ def main_app():
                 st.rerun()
             else:
                 st.error("Failed to clear chat history.")
-        # Add this in sidebar after the Learning Stats button
-        if "knowledge_base_instructions" in st.session_state and st.session_state.knowledge_base_instructions:
-            with st.expander("📚 Knowledge Base"):
-                st.markdown("*Shared instructions from all users:*")
-                for i, instruction in enumerate(st.session_state.knowledge_base_instructions, 1):
-                    st.markdown(f"{i}. {instruction}")
-        # In sidebar after other buttons
-        # if not st.session_state.get('continuation_detection_enabled', True):
-        #     if st.button("🔄 Re-enable Smart Linking"):
-        #         st.session_state.continuation_detection_enabled = True
-        #         st.success("Smart question linking re-enabled!")
+
         # 4. Logout button
         if st.button("Logout"):
             # Clear all session state variables related to chat and queries
@@ -1502,18 +1519,12 @@ def main_app():
             # Reinitialize only the authentication state
             st.session_state["authenticated"] = False
             st.rerun()
-        st.markdown("### Settings")
-
-        # # Checkbox for continuation detection
-        # continuation_enabled = st.checkbox(
-        #     "🔄 Smart Question Linking",
-        #     value=st.session_state.get('continuation_detection_enabled', True),
-        #     key="continuation_checkbox",
-        #     help="Automatically detect when your question relates to the previous one"
-        # )
-
-        # # Update session state when checkbox changes
-        # st.session_state.continuation_detection_enabled = continuation_enabled
+            # Add this in sidebar after the Learning Stats button
+        if "knowledge_base_instructions" in st.session_state and st.session_state.knowledge_base_instructions:
+                with st.expander("📚 Knowledge Base"):
+                    st.markdown("*Shared instructions from all users:*")
+                    for i, instruction in enumerate(st.session_state.knowledge_base_instructions, 1):
+                        st.markdown(f"{i}. {instruction}")
 
     # ----------------------------------
     #  B) MAIN: Chat interface
@@ -2144,14 +2155,27 @@ def main_app():
 
                 # Use limited context for SQL generation
                 # Check if we're in a correction flow
-                response_text, token_usage_first_call = get_groq_response(enhanced_messages)
+                in_correction_flow = st.session_state.get("spelling_just_corrected", False)
+                limited_messages = get_limited_conversation_history(
+                    enhanced_messages[1:],
+                    window_size=2,
+                    preserve_correction_context=in_correction_flow
+                )
+                enhanced_messages_limited = [{"role": "system", "content": enhanced_prompt}] + limited_messages
+                response_text, token_usage_first_call = get_groq_response(enhanced_messages_limited)
 
                 # Clear temporary clarifications after use
                 del st.session_state.temp_clarifications
             else:
-                response_text, token_usage_first_call = get_groq_response_with_system(
-                    st.session_state.messages
+                # Use limited context for SQL generation
+                # Check if we're in a correction flow
+                in_correction_flow = st.session_state.get("spelling_just_corrected", False)
+                limited_messages = get_limited_conversation_history(
+                    st.session_state.messages,
+                    window_size=2,
+                    preserve_correction_context=in_correction_flow
                 )
+                response_text, token_usage_first_call = get_groq_response_with_system(limited_messages)
 
             st.session_state.total_tokens += token_usage_first_call
 
@@ -2579,10 +2603,10 @@ def main_app():
                     del st.session_state.correction_data
                     st.info(f"✅ Using: {mapping['replacement']}")
 
-
+                    # SET FLAG to indicate spelling was just corrected
                     # SET FLAG to indicate spelling was just corrected
                     st.session_state.spelling_just_corrected = True
-
+                    st.session_state.preserve_correction_context = True
 
                     # If we have pending clarifications, update them with correct spelling
                     if hasattr(st.session_state, 'pending_clarifications') and st.session_state.pending_clarifications:
@@ -2823,13 +2847,32 @@ def main_app():
 
                 # Use limited context for SQL generation
                 # Check if we're in a correction flow or just made a correction choice
-                response_text, token_usage_first_call = get_groq_response(enhanced_messages)
+                in_correction_flow = (
+                        st.session_state.get("spelling_just_corrected", False) or
+                        st.session_state.get("awaiting_correction_choice", False)
+                )
+                limited_messages = get_limited_conversation_history(
+                    enhanced_messages[1:],
+                    window_size=2,
+                    preserve_correction_context=in_correction_flow
+                )
+                enhanced_messages_limited = [{"role": "system", "content": enhanced_prompt}] + limited_messages
+                response_text, token_usage_first_call = get_groq_response(enhanced_messages_limited)
 
                 # Don't delete temp_clarifications here - keep them for potential spelling correction
             else:
-                response_text, token_usage_first_call = get_groq_response_with_system(
-                    st.session_state.messages
+                # Use limited context for SQL generation
+                # Check if we're in a correction flow or just made a correction choice
+                in_correction_flow = (
+                        st.session_state.get("spelling_just_corrected", False) or
+                        st.session_state.get("awaiting_correction_choice", False)
                 )
+                limited_messages = get_limited_conversation_history(
+                    st.session_state.messages,
+                    window_size=2,
+                    preserve_correction_context=in_correction_flow
+                )
+                response_text, token_usage_first_call = get_groq_response_with_system(limited_messages)
 
             st.session_state.total_tokens += token_usage_first_call
 
@@ -3324,5 +3367,4 @@ if st.session_state["authenticated"]:
     else:
         main_app()
 else:
-
     login_page()

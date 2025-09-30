@@ -636,7 +636,8 @@ def load_conversation_into_session(conversation):
     st.session_state.last_save_time = time.time()
 
 
-def get_limited_conversation_history(messages, window_size=2, preserve_correction_context=False):
+def get_limited_conversation_history(messages, window_size=2, preserve_correction_context=False, last_sql_query=None,
+                                     current_prompt=None):
     """
     Get only the most recent conversation window for LLM context.
     window_size=2 means we keep only the last Q&A pair (1 user message + 1 assistant message)
@@ -662,73 +663,24 @@ def get_limited_conversation_history(messages, window_size=2, preserve_correctio
             # Look for the original question that led to this correction
             window_size = 4  # Include 2 Q&A pairs to maintain context
 
-    # Return only the last 'window_size' messages
-    return non_system_messages[-window_size:] if len(non_system_messages) > window_size else non_system_messages
+    # Get the limited messages
+    limited_msgs = non_system_messages[-window_size:] if len(non_system_messages) > window_size else non_system_messages
 
+    # If we have a short current prompt and last SQL, add context to the last user message
+    if (last_sql_query and current_prompt and len(current_prompt.split()) < 5 and
+            limited_msgs and limited_msgs[-1]["role"] == "user"):
+        # Add SQL context to help with continuation
+        context_note = f"\nNote: The previous SQL query was: {last_sql_query}\nConsider if this new question is a continuation or refinement of that query."
 
-def get_smart_conversation_history(messages, window_size=2):
-    """
-    Smart conversation history that keeps text-based Q&A pairs longer than table-based ones.
-    This prevents context loss when a table response interrupts the conversation flow.
-    """
-    if not messages:
-        return []
+        # Create a copy and modify the last message
+        limited_msgs = limited_msgs.copy()
+        limited_msgs[-1] = {
+            "role": "user",
+            "content": limited_msgs[-1]["content"] + context_note
+        }
 
-    # Filter out system messages
-    non_system_messages = [msg for msg in messages if msg["role"] != "system"]
+    return limited_msgs
 
-    if len(non_system_messages) <= window_size:
-        return non_system_messages
-
-    # Look backwards through messages to find the last meaningful text exchange
-    result_messages = []
-    table_response_found = False
-
-    # Start from the end and work backwards
-    for i in range(len(non_system_messages) - 1, -1, -1):
-        msg = non_system_messages[i]
-
-        # Check if this is a table response
-        if msg["role"] == "assistant" and "Query returned" in msg[
-            "content"] and "rows. The result is displayed below:" in msg["content"]:
-            table_response_found = True
-
-        # Add messages to result (in reverse order for now)
-        result_messages.append(msg)
-
-        # If we found a table response and have added 2 messages, check if we need more context
-        if table_response_found and len(result_messages) >= 2:
-            # Look for the previous text-based Q&A pair
-            if i - 2 >= 0:  # Check if there's a previous Q&A pair
-                prev_assistant_msg = non_system_messages[i - 1]
-                prev_user_msg = non_system_messages[i - 2]
-
-                # Check if previous assistant message was NOT a table
-                if prev_assistant_msg["role"] == "assistant" and not (
-                        "Query returned" in prev_assistant_msg["content"] and "rows." in prev_assistant_msg["content"]):
-                    # Include this text-based Q&A pair too
-                    result_messages.append(prev_assistant_msg)
-                    result_messages.append(prev_user_msg)
-                    break
-            break
-
-        # Normal window size limit
-        if len(result_messages) >= window_size and not table_response_found:
-            break
-
-    # Reverse to get correct order
-    result_messages.reverse()
-
-    return result_messages
-
-def should_include_sql_in_context(user_question):
-    """
-    Check if SQL query should be included in context based on question length.
-    Returns True if question has 10 or fewer words.
-    """
-    # Remove extra spaces and split by words
-    words = user_question.strip().split()
-    return len(words) <= 10
 # ---------------------------------------------
 # 7. Query Logging (existing from your code)
 # ---------------------------------------------
@@ -2219,32 +2171,28 @@ def main_app():
 
                 # Use limited context for SQL generation
                 # Check if we're in a correction flow
-                in_correction_flow = st.session_state.get("spelling_just_corrected", False)
-                limited_messages = get_limited_conversation_history(
-                    enhanced_messages[1:],
-                    window_size=2,
-                    preserve_correction_context=in_correction_flow
-                )
-                enhanced_messages_limited = [{"role": "system", "content": enhanced_prompt}] + limited_messages
-                response_text, token_usage_first_call = get_groq_response(enhanced_messages_limited)
+                response_text, token_usage_first_call = get_groq_response(enhanced_messages)
 
                 # Clear temporary clarifications after use
                 del st.session_state.temp_clarifications
             else:
-                # Use limited context for SQL generation
-                # Check if we're in a correction flow
-                in_correction_flow = st.session_state.get("spelling_just_corrected", False)
-                limited_messages = get_smart_conversation_history(
-                    st.session_state.messages,
-                    window_size=2
-                ) if not in_correction_flow else get_limited_conversation_history(
-                    st.session_state.messages,
-                    window_size=4,
-                    preserve_correction_context=True
-                )
-                response_text, token_usage_first_call = get_groq_response_with_system(limited_messages)
+                # Check if this might be a continuation query
+                if st.session_state.last_sql_query and len(prompt.split()) < 5:  # Short questions likely continuations
+                    # Add context about previous query
+                    context_note = f"\nNote: The previous query was: {st.session_state.last_sql_query}\nConsider if this new question is a continuation or refinement of that query."
 
-            st.session_state.total_tokens += token_usage_first_call
+                    # Create a temporary message with context
+                    temp_messages = st.session_state.messages.copy()
+                    if temp_messages and temp_messages[-1]["role"] == "user":
+                        temp_messages[-1] = {"role": "user", "content": temp_messages[-1]["content"] + context_note}
+
+                    response_text, token_usage_first_call = get_groq_response_with_system(temp_messages)
+                else:
+                    response_text, token_usage_first_call = get_groq_response_with_system(
+                        st.session_state.messages
+                    )
+
+                st.session_state.total_tokens += token_usage_first_call
 
             # Check if it's an error response
             if response_text.strip().startswith("ERROR:"):
@@ -2511,15 +2459,7 @@ def main_app():
                 total_tokens_used=st.session_state.total_tokens
             )
 
-            # Check if we should include SQL in the response for context
-            if should_include_sql_in_context(prompt) and sql_query:
-                # Create enhanced response with SQL query for future context
-                enhanced_response = f"{natural_response}\n[SQL Query Used: {sql_query}]"
-                st.session_state.messages.append({"role": "assistant", "content": enhanced_response})
-            else:
-                st.session_state.messages.append({"role": "assistant", "content": natural_response})
-
-            # Always show only natural response in chat history (what user sees)
+            st.session_state.messages.append({"role": "assistant", "content": natural_response})
             st.session_state.chat_history.append({"role": "assistant", "content": natural_response})
             # If we have pending clarifications and got results, save them now
             if hasattr(st.session_state, 'pending_clarifications') and st.session_state.pending_clarifications:
@@ -2920,39 +2860,27 @@ def main_app():
                 # Create messages with enhanced system prompt
                 enhanced_messages = [{"role": "system", "content": enhanced_prompt}] + st.session_state.messages[1:]
 
-                # Use limited context for SQL generation
-                # Check if we're in a correction flow or just made a correction choice
-                in_correction_flow = (
-                        st.session_state.get("spelling_just_corrected", False) or
-                        st.session_state.get("awaiting_correction_choice", False)
-                )
-                limited_messages = get_limited_conversation_history(
-                    enhanced_messages[1:],
-                    window_size=2,
-                    preserve_correction_context=in_correction_flow
-                )
-                enhanced_messages_limited = [{"role": "system", "content": enhanced_prompt}] + limited_messages
-                response_text, token_usage_first_call = get_groq_response(enhanced_messages_limited)
-
-                # Don't delete temp_clarifications here - keep them for potential spelling correction
+                response_text, token_usage_first_call = get_groq_response(enhanced_messages)
             else:
                 # Use limited context for SQL generation
                 # Check if we're in a correction flow or just made a correction choice
-                in_correction_flow = (
-                        st.session_state.get("spelling_just_corrected", False) or
-                        st.session_state.get("awaiting_correction_choice", False)
-                )
-                limited_messages = get_smart_conversation_history(
-                    st.session_state.messages,
-                    window_size=2
-                ) if not in_correction_flow else get_limited_conversation_history(
-                    st.session_state.messages,
-                    window_size=4,
-                    preserve_correction_context=True
-                )
-                response_text, token_usage_first_call = get_groq_response_with_system(limited_messages)
+                # Check if this might be a continuation query
+                if st.session_state.last_sql_query and len(prompt.split()) < 5:  # Short questions likely continuations
+                    # Add context about previous query
+                    context_note = f"\nNote: The previous query was: {st.session_state.last_sql_query}\nConsider if this new question is a continuation or refinement of that query."
 
-            st.session_state.total_tokens += token_usage_first_call
+                    # Create a temporary message with context
+                    temp_messages = st.session_state.messages.copy()
+                    if temp_messages and temp_messages[-1]["role"] == "user":
+                        temp_messages[-1] = {"role": "user", "content": temp_messages[-1]["content"] + context_note}
+
+                    response_text, token_usage_first_call = get_groq_response_with_system(temp_messages)
+                else:
+                    response_text, token_usage_first_call = get_groq_response_with_system(
+                        st.session_state.messages
+                    )
+
+                st.session_state.total_tokens += token_usage_first_call
 
             # Check if it's an error response
             if response_text.strip().startswith("ERROR:"):
@@ -3355,15 +3283,7 @@ def main_app():
                 total_tokens_used=st.session_state.total_tokens
             )
 
-            # Check if we should include SQL in the response for context
-            if should_include_sql_in_context(prompt) and sql_query:
-                # Create enhanced response with SQL query for future context
-                enhanced_response = f"{natural_response}\n[SQL Query Used: {sql_query}]"
-                st.session_state.messages.append({"role": "assistant", "content": enhanced_response})
-            else:
-                st.session_state.messages.append({"role": "assistant", "content": natural_response})
-
-            # Always show only natural response in chat history (what user sees)
+            st.session_state.messages.append({"role": "assistant", "content": natural_response})
             st.session_state.chat_history.append({"role": "assistant", "content": natural_response})
 
             if hasattr(st.session_state, 'temp_clarifications'):

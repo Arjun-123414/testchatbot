@@ -217,13 +217,7 @@ def detect_continuation_question(
     return False, None, None
 
 
-def format_continuation_options(
-        original_question: str,
-        combined_question: str,
-        previous_question: str
-) -> str:
-    """Format the options for user to choose from."""
-
+def format_continuation_options(original_question: str, combined_question: str, previous_question: str) -> str:
     formatted_response = f"""
 🔄 **Continuation Question Detected**
 
@@ -235,9 +229,10 @@ Please select which interpretation you meant:
 
 **2)** {combined_question} *(interpret as continuation of previous question)*
 
-Type **1** or **2** to select your preferred interpretation, or rephrase your question if neither is correct.
-"""
+Type **1** or **2** to select.
 
+💡 **Tip:** Add 'no' after your choice (e.g., "2 no") to turn off these suggestions for this session.
+"""
     return formatted_response
 
 
@@ -373,3 +368,4 @@ def check_and_handle_continuation(
     )
 
     return result
+

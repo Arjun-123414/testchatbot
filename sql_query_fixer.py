@@ -235,6 +235,38 @@ def add_qualify_for_distinct_purchase_order(query: str) -> str:
 
     return fixed_query
 
+
+def fix_ap_invoice_paid_vendor_columns(query: str) -> str:
+    """
+    Fix vendor column names in AP_INVOICE_PAID table:
+    - VENDOR_NAME -> ACCOUNT_NAME
+    - VENDOR_ID/VENDOR_NUM/VENDOR_NUMBER -> ACCOUNT_NUM
+    """
+    # Check if query involves AP_INVOICE_PAID table
+    if not re.search(r'\bAP_INVOICE_PAID\b', query, re.IGNORECASE):
+        return query
+
+    # Replace VENDOR_NAME with ACCOUNT_NAME (both quoted and unquoted)
+    # Pattern handles: VENDOR_NAME, "VENDOR_NAME", vendor_name, "vendor_name"
+    query = re.sub(r'\b(VENDOR_NAME)\b', 'ACCOUNT_NAME', query, flags=re.IGNORECASE)
+    query = re.sub(r'"(VENDOR_NAME)"', '"ACCOUNT_NAME"', query, flags=re.IGNORECASE)
+
+    # Replace VENDOR_ID, VENDOR_NUM, VENDOR_NUMBER with ACCOUNT_NUM
+    vendor_id_patterns = [
+        r'\b(VENDOR_ID)\b',
+        r'\b(VENDOR_NUM)\b',
+        r'\b(VENDOR_NUMBER)\b'
+    ]
+
+    for pattern in vendor_id_patterns:
+        query = re.sub(pattern, 'ACCOUNT_NUM', query, flags=re.IGNORECASE)
+        # Also handle quoted versions
+        quoted_pattern = pattern.replace(r'\b', r'"').replace(r'\b', r'"')
+        query = re.sub(quoted_pattern, '"ACCOUNT_NUM"', query, flags=re.IGNORECASE)
+
+    return query
+
+
 def auto_fix_sql_query(query: str, schema_text: str) -> Tuple[str, List[str]]:
     """
     Main function to automatically fix common SQL query issues.
@@ -269,16 +301,25 @@ def auto_fix_sql_query(query: str, schema_text: str) -> Tuple[str, List[str]]:
     if query_after_null_fix != query:
         fixes_applied.append("Added IS NOT NULL conditions for grouped columns to exclude NULL results")
         query = query_after_null_fix
+
     # Fix 4: Add quotes to special columns in PO_DETAILS
     query_after_quote_fix = fix_special_column_quotes(query)
     if query_after_quote_fix != query:
         fixes_applied.append("Added quotes to special columns (item_#, discount_%) in PO_DETAILS")
         query = query_after_quote_fix
+
     # Fix 5: Add QUALIFY for DISTINCT PURCHASE_ORDER queries
     query_after_qualify_fix = add_qualify_for_distinct_purchase_order(query)
     if query_after_qualify_fix != query:
         fixes_applied.append("Added QUALIFY ROW_NUMBER() to get latest entry per Purchase Order")
         query = query_after_qualify_fix
+
+    # Fix 6: Fix vendor column names in AP_INVOICE_PAID table
+    query_after_vendor_fix = fix_ap_invoice_paid_vendor_columns(query)
+    if query_after_vendor_fix != query:
+        fixes_applied.append(
+            "Fixed vendor column names in AP_INVOICE_PAID table (VENDOR_NAME->ACCOUNT_NAME, VENDOR_ID/NUM/NUMBER->ACCOUNT_NUM)")
+        query = query_after_vendor_fix
 
     return query, fixes_applied
 
@@ -291,7 +332,4 @@ def fix_generated_sql(sql_query: str, schema_text: str) -> str:
     """
     fixed_query, fixes = auto_fix_sql_query(sql_query, schema_text)
 
-
     return fixed_query
-
-

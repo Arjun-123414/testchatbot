@@ -27,6 +27,26 @@ def extract_table_from_query(sql_query: str) -> List[str]:
     return list(set(tables))
 
 
+def is_sql_query(text: str) -> bool:
+    """
+    Check if the text is a SQL query rather than a natural language question.
+    Returns True if SQL keywords are detected.
+    """
+    sql_keywords = [
+        'SELECT', 'FROM', 'WHERE', 'JOIN', 'GROUP BY', 
+        'ORDER BY', 'LIMIT', 'INSERT', 'UPDATE', 'DELETE',
+        'COUNT(', 'SUM(', 'AVG(', 'MAX(', 'MIN('
+    ]
+    
+    text_upper = text.upper()
+    
+    # Check if multiple SQL keywords are present
+    keyword_count = sum(1 for keyword in sql_keywords if keyword in text_upper)
+    
+    # If 2 or more SQL keywords found, it's likely SQL
+    return keyword_count >= 2
+
+
 def combine_questions_with_llm(current_question: str, previous_question: str, groq_response_func) -> str:
     """
     Use LLM to enhance current question using previous context,
@@ -42,11 +62,10 @@ def combine_questions_with_llm(current_question: str, previous_question: str, gr
     - Only add missing details (vendor, year, department, etc.) from the previous question.
     - Focus ONLY on the CURRENT question intent.
     - The output must be a single, natural, complete question.
+    - NEVER return SQL code - only natural language questions.
 
     Previous Question: {previous_question}
     Current Question: {current_question}
-
-
 
     Example 1:
     - Previous: "Show me sales data for Q1 2023"
@@ -58,17 +77,30 @@ def combine_questions_with_llm(current_question: str, previous_question: str, gr
     - Current: "Who has the highest salary"
     - Enhanced: "Who has the highest salary in the marketing department?"
 
-    Respond ONLY with the rewritten current question.
+    Example 3:
+    - Previous: "no. of POs created in October 2025"
+    - Current: "in company ATI"
+    - Enhanced: "Number of POs created in October 2025 for company ATI?"
+
+    Respond ONLY with the rewritten current question in natural language.
+    DO NOT include any SQL code in your response.
     """
 
     messages = [
-        {"role": "system", "content": "You are an expert at rewriting questions with inherited context."},
+        {"role": "system", "content": "You are an expert at rewriting questions with inherited context. You ONLY return natural language questions, never SQL code."},
         {"role": "user", "content": combination_prompt}
     ]
 
     try:
         response, _ = groq_response_func(messages)
-        return response.strip().strip('"').strip("'")
+        cleaned_response = response.strip().strip('"').strip("'")
+        
+        # Validate that the response is not SQL
+        if is_sql_query(cleaned_response):
+            # Fallback to simple concatenation if LLM returns SQL
+            return f"{current_question} (in context of: {previous_question})"
+        
+        return cleaned_response
     except Exception:
         return f"{current_question} (in context of: {previous_question})"
 
@@ -104,10 +136,7 @@ def detect_continuation_question(
     Analyze if Question 2 is a continuation or follow-up of Question 1.
 
     Question 1: {previous_question}
-    SQL 1: {previous_sql}
-
     Question 2: {current_question}
-    SQL 2: {current_sql}
 
     Common tables used: {', '.join(common_tables)}
 
@@ -117,18 +146,30 @@ def detect_continuation_question(
     3. Question 2 might use pronouns (it, that, which) or be incomplete without Question 1's context
     4. Question 2 might be asking for a subset, maximum, minimum, or specific detail from Question 1's scope
     5. 🚫 IMPORTANT: Never merge intents. The combined_question must ONLY rewrite Question 2 by inheriting context (filters, vendor, year, etc.) from Question 1. Do not repeat or include Q1's intent.
+    6. ⚠️ CRITICAL: The combined_question field must ALWAYS be a natural language question, NEVER SQL code.
+
+    Examples of CORRECT combined_question format:
+    - "Number of POs created in October 2025 for company ATI"
+    - "Which month had highest sales in Q1 2023"
+    - "Who has the highest salary in the marketing department"
+
+    Examples of INCORRECT combined_question format (DO NOT DO THIS):
+    - "SELECT COUNT(*) FROM..." 
+    - Any SQL query
+
     Respond in JSON format:
     {{
         "is_continuation": true/false,
         "confidence": "high"/"medium"/"low",
         "reasoning": "brief explanation",
-        "combined_question": "suggested combined question if continuation, else null"
+        "combined_question": "natural language question only, never SQL code"
     }}
     """
 
     messages = [
-        {"role": "system", "content": "You are an expert at analyzing SQL queries and natural language questions."},
-        {"role": "user", "content": analysis_prompt}]
+        {"role": "system", "content": "You are an expert at analyzing questions. When providing a combined_question, you ALWAYS use natural language, NEVER SQL code."},
+        {"role": "user", "content": analysis_prompt}
+    ]
 
     response, _ = groq_response_func(messages)
 
@@ -145,11 +186,23 @@ def detect_continuation_question(
         result = json.loads(cleaned_response.strip())
 
         if result.get('is_continuation') and result.get('confidence') in ['high', 'medium']:
-            return True, result.get('combined_question'), result.get('reasoning')
-    except:
+            combined_question = result.get('combined_question')
+            
+            # CRITICAL VALIDATION: Check if the combined_question is SQL
+            if combined_question and is_sql_query(combined_question):
+                # LLM returned SQL - use the dedicated combine function instead
+                combined_question = combine_questions_with_llm(
+                    current_question, 
+                    previous_question, 
+                    groq_response_func
+                )
+            
+            return True, combined_question, result.get('reasoning')
+            
+    except Exception as e:
         # Fallback to simple heuristic if LLM fails
         continuation_keywords = ['which', 'what', 'that', 'those', 'maximum', 'minimum', 'most', 'least', 'highest',
-                                 'lowest']
+                                 'lowest', 'in', 'for', 'of', 'from']
         current_lower = current_question.lower()
 
         # Check for continuation indicators
@@ -164,7 +217,13 @@ def detect_continuation_question(
     return False, None, None
 
 
-def format_continuation_options(original_question: str, combined_question: str, previous_question: str) -> str:
+def format_continuation_options(
+        original_question: str,
+        combined_question: str,
+        previous_question: str
+) -> str:
+    """Format the options for user to choose from."""
+
     formatted_response = f"""
 🔄 **Continuation Question Detected**
 
@@ -176,10 +235,9 @@ Please select which interpretation you meant:
 
 **2)** {combined_question} *(interpret as continuation of previous question)*
 
-Type **1** or **2** to select.
-
-💡 **Tip:** Add 'no' after your choice (e.g., "2 no") to turn off these suggestions for this session.
+Type **1** or **2** to select your preferred interpretation, or rephrase your question if neither is correct.
 """
+
     return formatted_response
 
 
@@ -212,7 +270,7 @@ def handle_continuation_detection(
             "options": None
         }
 
-    # Get the SQL for previous question (you'll need to implement this based on your system)
+    # Get the SQL for previous question
     previous_sql = get_last_sql_query_func()
 
     if not previous_sql:
@@ -246,6 +304,11 @@ def handle_continuation_detection(
     )
 
     if is_continuation and combined_question:
+        # Final validation before displaying
+        if is_sql_query(combined_question):
+            # Last resort - use simple concatenation
+            combined_question = f"{current_question} (continuing from: {previous_user_question})"
+        
         formatted_response = format_continuation_options(
             current_question,
             combined_question,

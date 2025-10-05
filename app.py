@@ -1541,6 +1541,10 @@ def main_app():
                     st.markdown("*Shared instructions from all users:*")
                     for i, instruction in enumerate(st.session_state.knowledge_base_instructions, 1):
                         st.markdown(f"{i}. {instruction}")
+        if not st.session_state.get('continuation_detection_enabled', True):
+            if st.button("🔄 Re-enable Smart Linking"):
+                st.session_state.continuation_detection_enabled = True
+                st.success("Smart question linking re-enabled!")
 
     # ----------------------------------
     #  B) MAIN: Chat interface
@@ -3374,3 +3378,4 @@ if st.session_state["authenticated"]:
         main_app()
 else:
     login_page()
+
